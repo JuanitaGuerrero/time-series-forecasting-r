@@ -1,0 +1,251 @@
+---
+title: ""
+author: ""
+date: ""
+
+output:
+  pdf_document:
+    toc: false
+    number_sections: false
+    latex_engine: xelatex
+
+header-includes:
+  - \usepackage{geometry}
+  - \geometry{margin=2.5cm}
+---
+
+\begin{center}
+
+\vspace{1cm}
+
+{\Huge \textbf{Taller 7}}
+
+\vspace{0.3cm}
+
+{\Large Biología Cuantitativa}
+
+\vspace{1cm}
+
+\end{center}
+
+\noindent
+\textbf{Análisis y código:} Juanita Guerrero
+\hfill
+`r {
+  meses <- c('enero','febrero','marzo','abril','mayo','junio',
+             'julio','agosto','septiembre','octubre','noviembre','diciembre')
+  hoy <- Sys.Date()
+  paste(as.numeric(format(hoy, '%d')),
+        'de',
+        meses[as.numeric(format(hoy, '%m'))],
+        'de',
+        format(hoy, '%Y'))
+}`
+
+\vspace{-1.5em}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{-0.3em}
+
+\begingroup
+\renewcommand{\contentsname}{}
+\tableofcontents
+\endgroup
+
+\newpage
+
+# Sección 1 - Dinámicas Epidemiológicas: Señales y Selección de Modelos
+
+\vspace{-2em}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{-0.3em}
+
+## Ejercicio 1
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+library(fpp2)
+library(fpp3)
+library(tidyverse)
+
+corticoides = as_tsibble(h02)
+
+# Descomponer la serie
+stl_corticoides = corticoides %>%
+  model(STL(value))
+
+autoplot(components(stl_corticoides)) +
+  labs(
+    title = "Descomposición STL de subsidios de corticosteroides",
+    x = "Año",
+    y = "Subsidios (millones de AUD)"
+  ) +
+  theme_bw()
+
+# Visualizar el comportamiento estacional de los subsidios x mes
+corticoides %>%
+  gg_season(value) +
+  scale_color_gradient(
+    low = "#B3D9F2",
+    high = "#1F4E79"
+  ) +
+  labs(
+    title = "Estacionalidad mensual de los subsidios de corticosteroides",
+    x = "Mes",
+    y = "Subsidios (millones de AUD)"
+  ) +
+  theme_bw()
+```
+
+La tendencia muestra un aumento gradual en el uso de corticosteroides, que podría relacionarse con una mayor necesidad de tratamiento de enfermedades respiratorias. Los subsidios alcanzan sus valores más altos en diciembre y enero, y disminuyen notablemente en febrero, lo que sugiere un patrón estacional en la demanda de estos medicamentos.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+# Evaluar la autocorrelación de los residuos
+components(stl_corticoides) %>%
+  ACF(remainder) %>%
+  autoplot() +
+  labs(
+    title = "Autocorrelación de los residuos de corticosteroides",
+    x = "Rezago (meses)",
+    y = "Autocorrelación"
+  ) +
+  theme_bw()
+```
+
+Los residuos aún presentan autocorrelaciones significativas, especialmente en los rezagos de 1, 4 y 24 meses, por lo que no se comportan como ruido blanco. Esto indica que persisten patrones temporales que podrían relacionarse con cambios en la demanda de tratamientos respiratorios y que no fueron capturados por la descomposición STL.
+
+## Ejercicio 2
+
+```{r, warning=FALSE, message=FALSE}
+# Ajustar modelos
+modelos_corticoides = corticoides %>%
+  model(
+    arima = ARIMA(value),
+    ets = ETS(value),
+    tslm = TSLM(value ~ trend() + season()),
+    snaive = SNAIVE(value),
+    rw = RW(value ~ drift()),
+    mean = MEAN(value)
+  )
+
+# Comparar AIC
+glance(modelos_corticoides) %>%
+  arrange(AICc)
+```
+
+El modelo TSLM obtuvo el menor AICc (−1058) entre los modelos evaluables mediante este criterio. Penalizar la complejidad es importante porque evita favorecer modelos que se ajustan demasiado a los datos históricos, pero que podrían tener menor capacidad predictiva.
+
+```{r, warning=FALSE, message=FALSE}
+# Evaluar residuos modelo TSLM
+modelos_corticoides %>%
+  select(tslm) %>%
+  gg_tsresiduals() +
+  theme_bw()
+```
+
+La ACF muestra varias autocorrelaciones significativas, lo que indica que el modelo no logró capturar toda la dependencia temporal de la serie. Al no comportarse los residuos como ruido blanco, las bandas de confianza podrían estar mal calibradas y subestimar la incertidumbre del pronóstico.
+
+# Sección 2 - Validación Cruzada (Backtesting) en Salud Pública
+
+\vspace{-2em}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{-0.3em}
+
+## Ejercicio 3
+
+```{r, warning=FALSE, message=FALSE}
+# Últimos 24 meses
+entrenamiento = corticoides %>%
+  slice(1:(n() - 24))
+
+# Ajustar el modelo nuevamente
+modelo_entrenamiento = entrenamiento %>%
+  model(tslm = TSLM(value ~ trend() + season()))
+
+# Pronosticar
+pronostico = modelo_entrenamiento %>%
+  forecast(h = 24)
+
+# Comparar pronósticos con reales
+pronostico %>%
+  accuracy(corticoides) %>%
+  select(.model, RMSE)
+```
+
+El modelo TSLM obtuvo un RMSE de 0.120 millones de AUD (120.000 AUD). Considerando que los subsidios mensuales se encuentran aproximadamente entre 0.4 y 1.25 millones de AUD, este error representa una diferencia considerable entre los valores pronosticados y los observados.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+pronostico %>%
+  autoplot(corticoides, level = 95) +
+  labs(
+    title = "Pronóstico de subsidios de corticosteroides",
+    x = "Año",
+    y = "Subsidios (millones de AUD)"
+  ) +
+  theme_bw()
+```
+
+El pronóstico logra reproducir el patrón estacional de los subsidios, aunque presenta errores considerables (RMSE = 0.120 millones de AUD). Además, la autocorrelación de los residuos indica que el modelo no captura toda la dinámica temporal, por lo que los intervalos de predicción del 95 % podrían estar mal calibrados.
+
+# Sección 3 - El Dominio de la Frecuencia: Sincronización Ecológica Bi-variada
+
+\vspace{-2em}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{-0.3em}
+
+## Ejercicio 4
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+periodograma = spec.pgram(pelt$Hare, main = "Periodograma de la población de liebres")
+frecuencia_dominante = periodograma$freq[which.max(periodograma$spec)]
+frecuencia_dominante
+
+periodo_dom = 1 / frecuencia_dominante
+
+periodo_dom
+```
+
+Visualmente, la frecuencia dominante está cerca de 0.1 ciclos por año. Al realizar el cálculo, se obtiene una frecuencia de 0.104, que corresponde a un período aproximado de 9.6 años. Esto significa que, entre 1845 y 1935, la población de liebres completaba un ciclo de auge y colapso aproximadamente cada década, posiblemente asociado con las interacciones depredador-presa y la disponibilidad de recursos.
+
+## Ejercicio 5
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+# Evaluar relación temporal
+pelt %>%
+  CCF(Hare, Lynx, lag_max = 15) %>%
+  autoplot() +
+  labs(
+    title = "Correlación cruzada entre liebres y linces",
+    x = "Rezago (años)",
+    y = "Correlación cruzada"
+  ) +
+  theme_bw()
+```
+
+La CCF muestra correlaciones significativas entre liebres y linces, con un pico positivo cercano al rezago de +1 año. Biológicamente, las liebres lideran la dinámica poblacional y los linces responden aproximadamente un año después, debido a la disponibilidad de presas. La repetición de los picos cada diez años refleja el comportamiento cíclico de ambas poblaciones.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+datos_preparados = pelt %>%
+  filter(!is.na(Hare), !is.na(Lynx))
+
+# Matrices con año y población
+matriz_liebres = cbind(datos_preparados$Year, datos_preparados$Hare)
+matriz_linces = cbind(datos_preparados$Year, datos_preparados$Lynx)
+
+# Calcular la coherencia
+coherencia_wtc = biwavelet::wtc(
+  matriz_liebres,
+  matriz_linces,
+  nrands = 100
+)
+
+# Visualizar coherencia y desfases temporales
+plot(
+  coherencia_wtc,
+  plot.phase = TRUE,
+  lty.coi = 1,
+  col.coi = "grey",
+  xlab = "Año",
+  ylab = "Periodo (años)"
+)
+```
+
+La mayor sincronización entre liebres y linces se observa entre las décadas de 1880 y 1910, en ciclos cercanos a 8–10 años. Las flechas apuntan principalmente hacia la derecha y ligeramente hacia arriba, indicando que ambas poblaciones oscilan casi en fase, pero las liebres se adelantan a los linces. Esto concuerda con la respuesta tardía del depredador frente a los cambios en la población de presas.
